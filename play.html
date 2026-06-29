@@ -160,7 +160,9 @@ function applyResp(r){ if(r && r.snapshot){ applySnapshot(r.snapshot); } else { 
 // ---------- 大厅 ----------
 const $=id=>document.getElementById(id);
 function lobErr(m){ $("lobErr").textContent=m||""; }
-function saveSession(){ localStorage.setItem("ghm_me", JSON.stringify(me)); }
+// 存储可能被禁用（如 data: URL 预览、隐私模式）→ 包一层，读不到就降级，不让整个 app 崩
+const LS={ get:k=>{try{return localStorage.getItem(k);}catch(e){return null;}}, set:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}}, del:k=>{try{localStorage.removeItem(k);}catch(e){}} };
+function saveSession(){ LS.set("ghm_me", JSON.stringify(me)); }
 
 async function doCreate(){
   lobErr("");
@@ -228,7 +230,7 @@ function applySnapshot(s){
 
 function applyFinal(s){
   // 渲染去重：盘面关键状态没变就只更新引用、不重渲染（否则 3s 轮询会清掉正在输入的出价框）
-  const sig=`${s.box}|${s.round}|${s.turnPos}|${s.phase}|${s.currentHigh}|${s.highSeat}|${s.seq}|${s.turnPeeked}`;
+  const sig=`${s.box}|${s.round}|${s.turnPos}|${s.phase}|${s.currentHigh}|${s.highSeat}|${s.seq}|${s.turnPeeked}|${(s.players||[]).length}`;
   if(snap && sig===lastSig){ snap=s; return; }
   lastSig=sig;
   const prevPhase = snap?.phase;
@@ -354,7 +356,7 @@ async function pickTarget(idx){
   peekingIdx=idx; render();                               // 点击瞬间转圈（缓解服务端往返期间的无反馈）
   try{ const r=await call("peek",{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
     myKnown[idx]={ci:r.ci,value:r.value,name:r.name};
-    peekingIdx=-1;
+    peekingIdx=-1; render();                               // 立刻收圈：轮询可能已抢更 lastSig，applyResp 会被去重吞掉，这里强制重渲染
     toast(`你偷看：${r.cells}格 → ${r.name}（${fmt(r.value)}）`);
     log(`你偷看了「${r.cells}格」→ ${r.name}（${fmt(r.value)}），第${snap.round}轮`,'y');
     applyResp(r);
@@ -371,7 +373,7 @@ async function humanRaise(){
 async function humanPass(){ if(!isMyTurn())return; const r=snap.round; try{ const resp=await call("pass",{room_id:me.room_id,player_token:me.player_token}); log(`你 过（第${r}轮）`,'muted'); applyResp(resp); }catch(e){ toast(e.message); await refresh(); } }
 async function nextBox(){ try{ applyResp(await call("next_box",{room_id:me.room_id,player_token:me.player_token})); }catch(e){ toast(e.message); } }
 // 退出/重开：清掉本地存档再刷新 → tryResume 不再恢复旧局，回到全新大厅
-function leaveRoom(){ if(!confirm("退出当前房间并回到大厅？")) return; localStorage.removeItem("ghm_me"); location.reload(); }
+function leaveRoom(){ if(!confirm("退出当前房间并回到大厅？")) return; LS.del("ghm_me"); location.reload(); }
 function isMyTurn(){ return snap && snap.phase==="bid" && snap.turnSeat===me.seat; }
 
 // ---------- 渲染 ----------
@@ -493,14 +495,14 @@ function toast(m){ let t=$("toastEl"); if(!t){ t=document.createElement('div'); 
 
 // ---------- 重连恢复 ----------
 async function tryResume(){
-  const saved=localStorage.getItem("ghm_me");
+  const saved=LS.get("ghm_me");
   if(!saved) return false;
   try{ me=JSON.parse(saved);
     const s=await fetchState();
-    if(!s){ localStorage.removeItem("ghm_me"); return false; }
+    if(!s){ LS.del("ghm_me"); return false; }
     if(s.phase==="lobby"){ enterRoom(); } else { await subscribe(); applySnapshot(s); }
     return true;
-  }catch(e){ localStorage.removeItem("ghm_me"); return false; }
+  }catch(e){ LS.del("ghm_me"); return false; }
 }
 
 // 暴露给内联 onclick
