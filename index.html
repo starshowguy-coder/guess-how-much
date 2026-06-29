@@ -127,7 +127,7 @@ function alive(){return players.map((p,i)=>i).filter(i=>players[i].alive);}
 
 function startContainer(){
   clearTimers(); box++;
-  const n=Math.random()<.5?6:7; container=[];
+  const n=9+Math.floor(Math.random()*5); container=[]; // 每箱 9–13 件，均匀随机（见 D003）
   for(let i=0;i<n;i++){const si=wpick(SIZEW);const ci=wpick(PROB[si]);
     container.push({si,ci,cells:SIZES[si],value:VAL[si][ci],name:NAMES[si][ci],knownBy:new Set(),peeks:[],revealed:false,opening:false});}
   currentHigh=0; highBidder=null; round=1; order=shuffle(alive());
@@ -314,7 +314,7 @@ function log(t,cls){const l=document.getElementById('log');const d=document.crea
 
 // ---- 新手引导 ----
 const OB=[
- {t:'🎯 你在玩什么',b:`你和另外 3 人竞拍一个个<b>神秘集装箱</b>，每箱装着 6–7 件收藏品。<br><br>
+ {t:'🎯 你在玩什么',b:`你和另外 3 人竞拍一个个<b>神秘集装箱</b>，每箱装着 9–13 件收藏品。<br><br>
    拍前你<b>只看得到每件的大小</b>（占几格），<span class="em">看不到颜色和价值</span>。<br><br>
    目标：<b>猜整箱到底值多少钱</b>，用划算的价格把它拍下来。<br>
    <b>利润 = 整箱真实价值 − 你的出价</b>。买得比真实价值便宜就赚，反之就亏。<br><br>
