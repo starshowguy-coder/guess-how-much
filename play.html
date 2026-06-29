@@ -125,6 +125,7 @@ let snap = null;        // 最新公告栏快照
 let myKnown = {};       // 我这箱偷看到的：item_idx -> {ci,value,name}
 let myKnownBox = -1;
 let channel = null;
+let pollT = null;
 let lastLog = "";
 
 // ---------- 服务器调用 ----------
@@ -142,6 +143,8 @@ async function fetchState(){
   const rows = await r.json();
   return rows[0]?.snapshot || null;
 }
+// 主动从服务端拉权威状态刷新（不傻等 realtime 推送，realtime 会丢包）
+async function refresh(){ try{ const s=await fetchState(); if(s) applySnapshot(s); }catch(e){} }
 
 // ---------- 大厅 ----------
 const $=id=>document.getElementById(id);
@@ -163,7 +166,7 @@ async function doJoin(){
   catch(e){ lobErr(e.message); }
 }
 async function doAddAi(){ try{ await call("add_ai",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ lobErr(e.message); } }
-async function doStart(){ try{ await call("start",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ toast(e.message); } }
+async function doStart(){ try{ await call("start",{room_id:me.room_id,player_token:me.player_token}); await refresh(); }catch(e){ toast(e.message); } }
 
 async function enterRoom(){
   $("lobHome").classList.add("hidden");
@@ -193,6 +196,9 @@ async function subscribe(){
     .on("postgres_changes",{event:"UPDATE",schema:"public",table:"ghm_state",filter:"room_id=eq."+me.room_id},
         payload=>applySnapshot(payload.new.snapshot))
     .subscribe();
+  // 兜底轮询：realtime 会丢包，每 3 秒主动对一次账，丢了推送也能追上
+  if(pollT) clearInterval(pollT);
+  pollT=setInterval(refresh, 3000);
 }
 
 function applySnapshot(s){
@@ -207,6 +213,7 @@ function applySnapshot(s){
   logFromSnapshot(s, prevPhase);
   render();
   manageClock();
+  if(s.phase==="gameover" && pollT){ clearInterval(pollT); pollT=null; }
 }
 
 async function refreshMyView(){
@@ -226,7 +233,7 @@ function manageClock(){
     if(c) c.textContent=left+"s";
     if(Date.now()>=snap.deadline){
       clearInterval(clockT); clockT=null;
-      try{ await call("tick",{room_id:me.room_id}); }catch(e){}
+      try{ await call("tick",{room_id:me.room_id}); await refresh(); }catch(e){}
     }
   },250);
 }
@@ -241,6 +248,7 @@ async function pickTarget(idx){
   try{ const r=await call("peek",{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
     myKnown[idx]={ci:r.ci,value:r.value,name:r.name};
     toast(`你偷看：${r.cells}格 → ${r.name}（${fmt(r.value)}）`);
+    await refresh();
   }catch(e){ toast(e.message); }
 }
 async function humanRaise(){
@@ -248,10 +256,10 @@ async function humanRaise(){
   const inp=$("bidamt"); let amt=parseInt((inp.value||"").replace(/[^0-9]/g,""),10);
   if(isNaN(amt)){ toast("请输入金额"); return; }
   if(amt<snap.minNext){ toast("至少要 "+fmt(snap.minNext)); return; }
-  try{ await call("bid",{room_id:me.room_id,player_token:me.player_token,amount:amt}); }catch(e){ toast(e.message); }
+  try{ await call("bid",{room_id:me.room_id,player_token:me.player_token,amount:amt}); await refresh(); }catch(e){ toast(e.message); await refresh(); }
 }
-async function humanPass(){ if(!isMyTurn())return; try{ await call("pass",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ toast(e.message); } }
-async function nextBox(){ try{ await call("next_box",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ toast(e.message); } }
+async function humanPass(){ if(!isMyTurn())return; try{ await call("pass",{room_id:me.room_id,player_token:me.player_token}); await refresh(); }catch(e){ toast(e.message); await refresh(); } }
+async function nextBox(){ try{ await call("next_box",{room_id:me.room_id,player_token:me.player_token}); await refresh(); }catch(e){ toast(e.message); } }
 function isMyTurn(){ return snap && snap.phase==="bid" && snap.turnSeat===me.seat; }
 
 // ---------- 渲染 ----------
