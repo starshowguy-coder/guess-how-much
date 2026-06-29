@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guess How Much — 联机</title>
+<style>
+  :root{--bg:#0f1620;--panel:#18222e;--panel2:#1f2c3a;--line:#2c3b4d;--txt:#e6edf3;--mut:#8aa0b4;--gold:#f2c14e;--good:#4caf6e;--bad:#e25c5c;--acc:#3a86c8}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"PingFang SC","Microsoft YaHei",Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+  .wrap{max-width:1080px;margin:0 auto;padding:14px}
+  h1{font-size:18px;margin:0 0 2px} .sub{color:var(--mut);font-size:12px;margin-bottom:10px}
+  .players{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+  .pl{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .pl.turn{border-color:var(--gold);box-shadow:0 0 0 1px var(--gold)}
+  .pl.out{opacity:.4}
+  .pl.me{background:#1b2735}
+  .pl .nm{font-weight:700;display:flex;justify-content:space-between;align-items:center}
+  .pl .cash{color:var(--gold);font-variant-numeric:tabular-nums;font-size:15px}
+  .pl .tag{font-size:11px;color:var(--mut)}
+  .pl .bidding{font-size:11px;color:var(--gold)}
+  .bar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-bottom:10px}
+  .bar b{color:var(--gold)} .bar .x{color:var(--mut)}
+  .grid{display:flex;flex-wrap:wrap;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;min-height:120px;margin-bottom:10px}
+  .item{position:relative;border-radius:8px;border:2px solid #44566a;background:#0c131c;padding:8px;min-height:74px;display:flex;flex-direction:column;justify-content:space-between;cursor:default;transition:background .3s,border-color .3s}
+  .item .sz{font-size:18px;font-weight:800}
+  .item .nm{font-size:11px;line-height:1.2}
+  .item .vl{font-size:12px;color:var(--gold);font-variant-numeric:tabular-nums}
+  .item .peek{position:absolute;top:-9px;right:-6px;display:flex;gap:2px;flex-wrap:wrap;justify-content:flex-end;max-width:90px}
+  .badge{font-size:10px;background:#2b3a4c;border:1px solid var(--line);border-radius:8px;padding:0 5px;color:var(--mut)}
+  .badge.you{color:var(--gold);border-color:var(--gold)}
+  .opening{border-color:var(--gold)!important;box-shadow:0 0 14px rgba(242,193,78,.4)}
+  .spinner{width:30px;height:30px;border:3px solid #36475a;border-top-color:var(--gold);border-radius:50%;animation:spin .8s linear infinite;margin:6px auto 2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .justrevealed{animation:pop .35s ease}
+  @keyframes pop{0%{transform:scale(.7);opacity:.3}100%{transform:scale(1);opacity:1}}
+  .targeting .item{cursor:pointer} .targeting .item:hover{outline:2px solid var(--gold)}
+  .panel{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;min-height:64px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0}
+  button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 12px;font-size:13px;cursor:pointer;font-weight:600}
+  button.alt{background:#34465a} button.warn{background:#7a4a2a} button.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  input{background:#0c131c;border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:8px;width:120px;font-size:14px}
+  .clock{display:inline-block;min-width:34px;text-align:center;font-variant-numeric:tabular-nums;color:var(--gold);font-weight:700}
+  .log{background:#0c131c;border:1px solid var(--line);border-radius:10px;padding:10px;height:150px;overflow:auto;font-size:12px;line-height:1.5}
+  .log div{padding:1px 0;border-bottom:1px solid #16202b}
+  .muted{color:var(--mut)} .g{color:var(--good)} .b{color:var(--bad)} .y{color:var(--gold)}
+  .hint{color:var(--mut);font-size:12px;margin:4px 0}
+  details{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin-bottom:10px}
+  table{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}
+  th,td{border:1px solid var(--line);padding:3px 6px;text-align:center} th{color:var(--mut)}
+  .hidden{display:none!important}
+  /* 大厅 */
+  .lobby{max-width:440px;margin:8vh auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:24px}
+  .lobby h2{margin:0 0 4px;font-size:22px} .lobby .sub{margin-bottom:16px}
+  .lobby .seg{margin:14px 0;padding-top:14px;border-top:1px solid var(--line)}
+  .lobby input{width:100%;margin:6px 0;font-size:16px;text-transform:none}
+  .lobby input.code{text-transform:uppercase;letter-spacing:3px;font-weight:700;text-align:center}
+  .lobby button{width:100%;padding:11px;font-size:15px;margin-top:6px}
+  .code-show{font-size:30px;font-weight:800;letter-spacing:6px;color:var(--gold);text-align:center;margin:10px 0}
+  .seat-list{display:flex;flex-direction:column;gap:6px;margin:10px 0}
+  .seat{display:flex;justify-content:space-between;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+  .seat.empty{opacity:.45;font-style:italic}
+  .err{color:var(--bad);font-size:13px;margin:6px 0;min-height:18px}
+  .toast{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:#2b3a4c;border:1px solid var(--gold);color:var(--txt);padding:8px 16px;border-radius:8px;z-index:80;font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
+</style>
+</head>
+<body>
+<!-- 大厅 -->
+<div id="lobby" class="lobby">
+  <h2>Guess How Much</h2>
+  <div class="sub">4 人盲拍神秘集装箱，靠估值+偷看+读牌捡漏赚差价。</div>
+  <div class="err" id="lobErr"></div>
+  <div id="lobHome">
+    <input id="nameInput" placeholder="你的昵称" maxlength="12">
+    <div class="seg">
+      <button onclick="doCreate()">🏠 创建房间</button>
+    </div>
+    <div class="seg">
+      <input id="codeInput" class="code" placeholder="房间码" maxlength="5">
+      <button class="alt" onclick="doJoin()">🚪 输码加入</button>
+    </div>
+  </div>
+  <div id="lobRoom" class="hidden">
+    <div class="muted" style="text-align:center">房间码（发给朋友）</div>
+    <div class="code-show" id="roomCodeShow"></div>
+    <div class="seat-list" id="seatList"></div>
+    <div id="hostCtrl" class="hidden">
+      <button class="alt" onclick="doAddAi()">🤖 加一个 AI 补位</button>
+      <button onclick="doStart()" id="startBtn">▶ 开始游戏</button>
+    </div>
+    <div id="guestWait" class="hidden hint" style="text-align:center">等房主开始…</div>
+  </div>
+</div>
+
+<!-- 游戏 -->
+<div id="game" class="wrap hidden">
+  <h1>Guess How Much <span class="muted" id="roomTag" style="font-size:12px"></span></h1>
+  <div class="sub" id="meTag"></div>
+  <div class="players" id="players"></div>
+  <div class="bar" id="bar"></div>
+  <div class="grid" id="grid"></div>
+  <div class="panel" id="action"></div>
+  <details><summary>paybook（价值表与概率）</summary><div id="paybook"></div></details>
+  <div class="log" id="log"></div>
+</div>
+
+<script type="module">
+import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+const SUPA_URL = "https://dagrazduzanbhwkynqrd.supabase.co";
+const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRhZ3JhemR1emFuYmh3a3lucXJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg5MjI0ODQsImV4cCI6MjA5NDQ5ODQ4NH0.wJeFKK-KZa-DpEvrfonJkVaper8fxSZDMyINCi_mhbw";
+const sb = createClient(SUPA_URL, ANON);
+
+// 视觉常量（公开信息，与服务器一致）
+const SIZES=[1,2,4,6];
+const COLNAME=['白','蓝','紫','橙','红'], COLHEX=['#cfd6dd','#4a90d9','#9b59b6','#e67e22','#e74c3c'];
+const VAL=[[5,150,1200,6000,120000],[20,350,2500,12000,45000],[50,800,5000,24000,65000],[100,1500,8000,36000,85000]];
+const PROB=[[.22,.47,.20,.095,.015],[.24,.40,.23,.10,.03],[.25,.35,.26,.11,.03],[.25,.32,.28,.12,.03]];
+const EV=VAL.map((row,si)=>row.reduce((a,v,c)=>a+v*PROB[si][c],0));
+const fmt=n=>Math.round(n).toLocaleString();
+
+let me = null;          // {room_id, room_code, player_token, seat, host}
+let snap = null;        // 最新公告栏快照
+let myKnown = {};       // 我这箱偷看到的：item_idx -> {ci,value,name}
+let myKnownBox = -1;
+let channel = null;
+let lastLog = "";
+
+// ---------- 服务器调用 ----------
+async function call(action, extra={}){
+  const r = await fetch(`${SUPA_URL}/functions/v1/ghm`,{
+    method:"POST", headers:{apikey:ANON, Authorization:"Bearer "+ANON, "Content-Type":"application/json"},
+    body: JSON.stringify({action, ...extra})
+  });
+  const j = await r.json();
+  if(j.error) throw new Error(j.error);
+  return j;
+}
+async function fetchState(){
+  const r = await fetch(`${SUPA_URL}/rest/v1/ghm_state?room_id=eq.${me.room_id}&select=snapshot`,{headers:{apikey:ANON,Authorization:"Bearer "+ANON}});
+  const rows = await r.json();
+  return rows[0]?.snapshot || null;
+}
+
+// ---------- 大厅 ----------
+const $=id=>document.getElementById(id);
+function lobErr(m){ $("lobErr").textContent=m||""; }
+function saveSession(){ localStorage.setItem("ghm_me", JSON.stringify(me)); }
+
+async function doCreate(){
+  lobErr("");
+  const name=$("nameInput").value.trim()||"房主";
+  try{ const r=await call("create_room",{name}); me={room_id:r.room_id,room_code:r.room_code,player_token:r.player_token,seat:r.seat,host:true}; saveSession(); enterRoom(); }
+  catch(e){ lobErr(e.message); }
+}
+async function doJoin(){
+  lobErr("");
+  const name=$("nameInput").value.trim()||"玩家";
+  const code=$("codeInput").value.trim().toUpperCase();
+  if(code.length<4){ lobErr("请输入房间码"); return; }
+  try{ const r=await call("join_room",{name,code}); me={room_id:r.room_id,room_code:r.room_code,player_token:r.player_token,seat:r.seat,host:false}; saveSession(); enterRoom(); }
+  catch(e){ lobErr(e.message); }
+}
+async function doAddAi(){ try{ await call("add_ai",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ lobErr(e.message); } }
+async function doStart(){ try{ await call("start",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ toast(e.message); } }
+
+async function enterRoom(){
+  $("lobHome").classList.add("hidden");
+  $("lobRoom").classList.remove("hidden");
+  $("roomCodeShow").textContent=me.room_code;
+  $("hostCtrl").classList.toggle("hidden",!me.host);
+  $("guestWait").classList.toggle("hidden",me.host);
+  await subscribe();
+  applySnapshot(await fetchState());
+}
+
+function renderLobby(){
+  const ps = snap?.players || [];
+  const seats=[0,1,2,3].map(i=>{
+    const p=ps.find(x=>x.seat===i);
+    return p ? `<div class="seat"><span>${p.name}${p.is_ai?' 🤖':''}${p.seat===me.seat?' （你）':''}</span><span class="muted">座位 ${i+1}</span></div>`
+             : `<div class="seat empty"><span>空位</span><span>座位 ${i+1}</span></div>`;
+  }).join("");
+  $("seatList").innerHTML=seats;
+  if(me.host) $("startBtn").disabled = ps.length<2;
+}
+
+// ---------- 订阅 ----------
+async function subscribe(){
+  if(channel) await sb.removeChannel(channel);
+  channel = sb.channel("ghm:"+me.room_id)
+    .on("postgres_changes",{event:"UPDATE",schema:"public",table:"ghm_state",filter:"room_id=eq."+me.room_id},
+        payload=>applySnapshot(payload.new.snapshot))
+    .subscribe();
+}
+
+function applySnapshot(s){
+  if(!s) return;
+  const prevPhase = snap?.phase;
+  snap = s;
+  // 换箱了 → 清空我的偷看记忆并重新拉
+  if(s.box !== myKnownBox){ myKnown={}; myKnownBox=s.box; if(s.phase!=="lobby") refreshMyView(); }
+  if(s.phase==="lobby"){ renderLobby(); return; }
+  // 进入游戏画面
+  $("lobby").classList.add("hidden"); $("game").classList.remove("hidden");
+  logFromSnapshot(s, prevPhase);
+  render();
+  manageClock();
+}
+
+async function refreshMyView(){
+  try{ const r=await call("my_view",{room_id:me.room_id,player_token:me.player_token});
+    myKnownBox=r.box; myKnown={}; (r.known||[]).forEach(k=>myKnown[k.item_idx]={ci:k.ci,value:k.value,name:k.name});
+    render();
+  }catch(e){}
+}
+
+// ---------- 倒计时 + 超时驱动 ----------
+let clockT=null;
+function manageClock(){
+  if(clockT){ clearInterval(clockT); clockT=null; }
+  if(snap.phase!=="bid"||!snap.deadline) return;
+  clockT=setInterval(async ()=>{
+    const c=$("clock"); const left=Math.max(0,Math.ceil((snap.deadline-Date.now())/1000));
+    if(c) c.textContent=left+"s";
+    if(Date.now()>=snap.deadline){
+      clearInterval(clockT); clockT=null;
+      try{ await call("tick",{room_id:me.room_id}); }catch(e){}
+    }
+  },250);
+}
+
+// ---------- 动作 ----------
+let targetMode=false;
+function startPeek(){ if(!isMyTurn()||snap.turnPeeked) return; targetMode=true; render(); }
+async function pickTarget(idx){
+  if(!targetMode||!isMyTurn()||snap.turnPeeked) return;
+  if(myKnown[idx]) { targetMode=false; render(); return; }
+  targetMode=false;
+  try{ const r=await call("peek",{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
+    myKnown[idx]={ci:r.ci,value:r.value,name:r.name};
+    toast(`你偷看：${r.cells}格 → ${r.name}（${fmt(r.value)}）`);
+  }catch(e){ toast(e.message); }
+}
+async function humanRaise(){
+  if(!isMyTurn()) return;
+  const inp=$("bidamt"); let amt=parseInt((inp.value||"").replace(/[^0-9]/g,""),10);
+  if(isNaN(amt)){ toast("请输入金额"); return; }
+  if(amt<snap.minNext){ toast("至少要 "+fmt(snap.minNext)); return; }
+  try{ await call("bid",{room_id:me.room_id,player_token:me.player_token,amount:amt}); }catch(e){ toast(e.message); }
+}
+async function humanPass(){ if(!isMyTurn())return; try{ await call("pass",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ toast(e.message); } }
+async function nextBox(){ try{ await call("next_box",{room_id:me.room_id,player_token:me.player_token}); }catch(e){ toast(e.message); } }
+function isMyTurn(){ return snap && snap.phase==="bid" && snap.turnSeat===me.seat; }
+
+// ---------- 渲染 ----------
+function myCash(){ return snap.players.find(p=>p.seat===me.seat)?.cash ?? 0; }
+function render(){
+  if(!snap) return;
+  $("roomTag").textContent="房间 "+me.room_code;
+  const meP=snap.players.find(p=>p.seat===me.seat);
+  $("meTag").textContent=`你是 ${meP?.name||""}（座位 ${me.seat+1}）${me.host?' · 房主':''}`;
+  // 玩家条
+  $("players").innerHTML=snap.players.map(p=>{
+    const turn=(snap.turnSeat===p.seat)?' turn':''; const out=p.alive?'':' out'; const mine=p.seat===me.seat?' me':'';
+    const bidding=(snap.turnSeat===p.seat)?`<div class="bidding">⏳ 出价中…</div>`:'<div class="tag">&nbsp;</div>';
+    return `<div class="pl${turn}${out}${mine}"><div class="nm">${p.name}${p.is_ai?' 🤖':' 👤'}<span class="tag">${p.alive?'':'淘汰'}</span></div>
+      <div class="cash">${fmt(p.cash)}</div>${bidding}</div>`;}).join('');
+  // 状态条
+  const hp=snap.highSeat!=null?snap.players.find(p=>p.seat===snap.highSeat):null;
+  $("bar").innerHTML=
+    `<span>第 <b>${snap.box}</b>/${snap.boxCap} 箱</span><span class="x">|</span>`+
+    `<span>第 <b>${snap.round}</b>/3 轮</span><span class="x">|</span>`+
+    `<span>当前最高 <b>${snap.currentHigh===0?'—':fmt(snap.currentHigh)}</b>${hp?'（'+hp.name+'）':''}</span><span class="x">|</span>`+
+    `<span>最低下一口 <b>${fmt(snap.minNext)}</b></span><span class="x">|</span>`+
+    `<span>本箱税 <b>${fmt(snap.taxThis)}</b></span>`;
+  // 网格
+  const gd=$("grid"); gd.className='grid'+(targetMode?' targeting':'');
+  gd.innerHTML=(snap.items||[]).map(it=>{
+    const mineKnow=myKnown[it.idx];
+    const showFull = it.revealed || !!mineKnow;
+    const ci = it.revealed ? it.ci : (mineKnow?mineKnow.ci:-1);
+    const val = it.revealed ? it.value : (mineKnow?mineKnow.value:0);
+    const nm = it.revealed ? it.name : (mineKnow?mineKnow.name:'');
+    const bg=showFull?COLHEX[ci]:'#0c131c';
+    const txt=showFull&&ci<=1?'#10171f':'var(--txt)';
+    const badges=(it.peeks||[]).map(pk=>{const nmp=snap.players.find(p=>p.seat===pk.seat); return `<span class="badge${pk.seat===me.seat?' you':''}">${(nmp?.name||'?')[0]}${pk.round}</span>`;}).join('');
+    const body=`<div class="sz">${it.cells}格</div><div class="nm">${showFull?nm:'？？？'}</div><div class="vl">${showFull?fmt(val):''}</div>`;
+    return `<div class="item${it.justOpen?' opening':''}" style="width:${44+it.cells*16}px;border-color:${showFull?COLHEX[ci]:'#44566a'};background:${bg};color:${txt}" data-idx="${it.idx}">
+      <div class="peek">${badges}</div>${body}</div>`;}).join('');
+  gd.querySelectorAll('.item').forEach(el=>el.onclick=()=>pickTarget(+el.dataset.idx));
+  renderAction(); renderPaybook();
+}
+
+function renderAction(){
+  const el=$("action");
+  if(snap.phase==="gameover"){
+    const rank=snap.lastWinner?.rank||[];
+    el.innerHTML=`<h3 style="margin:2px 0 8px">🏁 游戏结束 — 按净资产排名</h3>`+
+      rank.map((p,i)=>`<div class="row"><b style="width:24px">${i+1}.</b><span style="width:110px">${p.name}</span><span class="y">${fmt(p.cash)}</span>${p.alive?'':'<span class="muted"> （淘汰）</span>'}</div>`).join('')+
+      `<div class="row" style="margin-top:10px"><button onclick="location.reload()">回大厅</button></div>`;
+    return;
+  }
+  if(snap.phase==="settle"){
+    const w=snap.lastWinner;
+    let s=w.flow?`<b>流拍</b>，整箱价值 ${fmt(w.total)}`
+      :`<b>${w.who}</b> 以 ${fmt(w.bid)} 拿下，整箱 ${fmt(w.total)}，利润 <span class="${w.profit>=0?'g':'b'}">${w.profit>=0?'+':''}${fmt(w.profit)}</span>`;
+    const deadTxt=w.dead?.length?` 💀 ${w.dead.join('、')} 淘汰。`:'';
+    el.innerHTML=`<div class="hint">本箱结算：${s}。全员缴税 ${fmt(snap.taxThis)}。${deadTxt}</div>`+
+      (me.host?`<button onclick="nextBox()">下一箱 ▶</button>`:`<div class="hint">等房主开下一箱…</div>`);
+    return;
+  }
+  if(snap.phase==="bid"){
+    if(!isMyTurn()){
+      const tp=snap.players.find(p=>p.seat===snap.turnSeat);
+      el.innerHTML=`<div class="hint"><b>${tp?.name||''}</b> 出价中… <span class="clock" id="clock"></span></div>`;
+      return;
+    }
+    const blind=(snap.items||[]).reduce((a,it)=>{const k=myKnown[it.idx]; return a+(k?k.value:EV[SIZES.indexOf(it.cells)]);},0);
+    const need=snap.minNext;
+    const jump=Math.round(Math.min(myCash(),need*1.6)/100)*100;
+    const peekRow = snap.turnPeeked
+      ? `<div class="row"><span class="muted">✔ 本回合已偷看</span></div>`
+      : `<div class="row"><button class="alt" onclick="startPeek()">🔍 偷看一件（可选）</button>${targetMode?'<span class="hint y">↑ 点击上方任意一件</span>':'<span class="muted">先看再出价，或直接出价</span>'}</div>`;
+    el.innerHTML=`<div class="hint">轮到你 <span class="clock" id="clock"></span>　盲估期望约 <b class="y">${fmt(blind)}</b>　当前最高 <b>${snap.currentHigh===0?'—':fmt(snap.currentHigh)}</b>，最低出价 <b>${fmt(need)}</b>，现金 <b class="y">${fmt(myCash())}</b></div>
+      ${peekRow}
+      <div class="row"><input id="bidamt" value="${need}">
+        <button onclick="humanRaise()">出价</button>
+        <button class="alt" onclick="document.getElementById('bidamt').value=${need}">最小加价</button>
+        <button class="alt" onclick="document.getElementById('bidamt').value=${jump}">跳价 ${fmt(jump)}</button>
+        <button class="warn" onclick="humanPass()">过</button></div>`;
+    return;
+  }
+  el.innerHTML='';
+}
+
+let pbDone=false;
+function renderPaybook(){
+  if(pbDone)return; pbDone=true;
+  let h='<table><tr><th>颜色＼格</th><th>1格</th><th>2格</th><th>4格</th><th>6格</th></tr>';
+  for(let c=0;c<5;c++){h+=`<tr><td style="color:${COLHEX[c]};font-weight:700">${COLNAME[c]}</td>`+
+    [0,1,2,3].map(si=>`<td>${fmt(VAL[si][c])}<br><span class="muted">${(PROB[si][c]*100).toFixed(1)}%</span></td>`).join('')+'</tr>';}
+  h+=`<tr><td class="muted">单格EV</td>`+[0,1,2,3].map(si=>`<td class="y">${fmt(EV[si])}</td>`).join('')+'</tr></table>';
+  $("paybook").innerHTML=h;
+}
+
+// ---------- 日志（由快照变化推导） ----------
+function logFromSnapshot(s, prevPhase){
+  const key=`${s.box}-${s.round}-${s.phase}-${s.currentHigh}-${s.highSeat}`;
+  if(key===lastLog) return; lastLog=key;
+  if(s.phase==="settle"){
+    const w=s.lastWinner;
+    log(w.flow?`第${s.box}箱 流拍，整箱 ${fmt(w.total)}`:`${w.who} 以 ${fmt(w.bid)} 拿下，整箱 ${fmt(w.total)}，利润 ${w.profit>=0?'+':''}${fmt(w.profit)}`, w.flow?'y':(w.profit>=0?'g':'b'));
+    if(w.dead?.length) log(`💀 ${w.dead.join('、')} 淘汰`,'b');
+  } else if(s.phase==="bid"){
+    if(s.currentHigh>0){ const hp=s.players.find(p=>p.seat===s.highSeat); log(`当前最高 ${fmt(s.currentHigh)}（${hp?.name||''}）`,'g'); }
+  }
+}
+function log(t,cls){const l=$("log");if(!l)return;const d=document.createElement('div');if(cls)d.className=cls;d.textContent=t;l.appendChild(d);l.scrollTop=l.scrollHeight;}
+
+// ---------- toast ----------
+let toastT=null;
+function toast(m){ let t=$("toastEl"); if(!t){ t=document.createElement('div'); t.id='toastEl'; t.className='toast'; document.body.appendChild(t);} t.textContent=m; t.style.display='block'; clearTimeout(toastT); toastT=setTimeout(()=>t.style.display='none',2600); }
+
+// ---------- 重连恢复 ----------
+async function tryResume(){
+  const saved=localStorage.getItem("ghm_me");
+  if(!saved) return false;
+  try{ me=JSON.parse(saved);
+    const s=await fetchState();
+    if(!s){ localStorage.removeItem("ghm_me"); return false; }
+    if(s.phase==="lobby"){ enterRoom(); } else { await subscribe(); applySnapshot(s); }
+    return true;
+  }catch(e){ localStorage.removeItem("ghm_me"); return false; }
+}
+
+// 暴露给内联 onclick
+Object.assign(window,{doCreate,doJoin,doAddAi,doStart,startPeek,pickTarget,humanRaise,humanPass,nextBox});
+
+tryResume();
+</script>
+</body>
+</html>
