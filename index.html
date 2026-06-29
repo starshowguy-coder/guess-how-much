@@ -101,6 +101,7 @@ const NAMES=[
  ['二手沙发','文艺复兴挂毯','商周青铜鼎','圆明园兽首','图坦卡蒙黄金面具'] ];
 const EV=VAL.map((row,si)=>row.reduce((a,v,c)=>a+v*PROB[si][c],0));
 const OPENING=1000, BOXCAP=25;
+const EST_DISCOUNT=0.7; // AI 对没看过的件按 EV×此系数估价（EV 被头奖灌水，见 D004）
 const TURN_TIME=25000;           // 每人回合倒计时（毫秒，所有人相同），可调
 const AI_THINK_MIN=3000, AI_THINK_MAX=8000; // AI 模拟思考时长（在回合倒计时内出手），可调
 function taxFor(b){return b<=5?2000:b<=10?6000:b<=15?15000:b<=20?35000:70000;}
@@ -163,7 +164,7 @@ function beginTurn(){
 }
 
 // ---- AI ----
-function estimate(pi){let s=0;for(const it of container)s+=it.knownBy.has(pi)?it.value:EV[it.si];return s*rnd(.9,1.1);}
+function estimate(pi){let s=0;for(const it of container)s+=it.knownBy.has(pi)?it.value:EV[it.si]*EST_DISCOUNT;return s*rnd(.9,1.1);}
 function aiPeek(pi){
   let cand=container.filter(it=>!it.knownBy.has(pi)); if(!cand.length)return;
   let ones=cand.filter(it=>it.cells===1);
