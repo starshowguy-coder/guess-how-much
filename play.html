@@ -127,6 +127,12 @@ let myKnownBox = -1;
 let channel = null;
 let pollT = null;
 let lastLog = "";
+// AI 回合回放（手感：假思考+倒计时+逐条记录）。常量对齐服务端，仅作展示
+const TURN_TIME = 25000, AI_THINK_MIN = 3000, AI_THINK_MAX = 8000, OPENING = 1000;
+const minRaiseC = (h) => Math.max(100, Math.ceil(h * 0.05 / 100) * 100);
+const minNextOf = (h) => h === 0 ? OPENING : h + minRaiseC(h);
+let lastSeq = -1, replaying = false, pendingSnap = null;   // 按 seq 去重，回放中挂起后续快照
+let myDeadline = null, lastTurnKey = "";                    // 轮到自己时给全新本地倒计时
 
 // ---------- 服务器调用 ----------
 async function call(action, extra={}){
@@ -203,6 +209,18 @@ async function subscribe(){
 
 function applySnapshot(s){
   if(!s) return;
+  if(replaying){ pendingSnap=s; return; }            // 回放中：先收着终态，放完再落
+  if(lastSeq<0) lastSeq = s.seq ?? 0;                // 首见 → 对齐 seq，不回放历史
+  if((s.seq??0) > lastSeq && s.events?.length){      // 有新一批 AI 事件 → 回放
+    lastSeq = s.seq;
+    replayEvents(s);
+    return;
+  }
+  lastSeq = Math.max(lastSeq, s.seq ?? 0);
+  applyFinal(s);
+}
+
+function applyFinal(s){
   const prevPhase = snap?.phase;
   snap = s;
   // 换箱了 → 清空我的偷看记忆并重新拉
@@ -211,9 +229,50 @@ function applySnapshot(s){
   // 进入游戏画面
   $("lobby").classList.add("hidden"); $("game").classList.remove("hidden");
   logFromSnapshot(s, prevPhase);
+  // 轮到我 → 给一个全新的本地倒计时（回放耗了若干秒，别用服务端旧 deadline，否则会被秒过）
+  const tkey=`${s.box}-${s.round}-${s.turnPos}`;
+  if(s.phase==="bid" && s.turnSeat===me.seat && tkey!==lastTurnKey){ myDeadline=Date.now()+TURN_TIME; lastTurnKey=tkey; }
   render();
   manageClock();
   if(s.phase==="gameover" && pollT){ clearInterval(pollT); pollT=null; }
+}
+
+// 逐条回放 advance() 期间的 AI 动作：思考动画+倒计时，再落地其偷看/出价/过
+async function replayEvents(finalSnap){
+  replaying=true;
+  if(clockT){ clearInterval(clockT); clockT=null; }   // 停掉上一回合真人的倒计时，别在回放中乱触发 tick
+  $("lobby").classList.add("hidden"); $("game").classList.remove("hidden");
+  let high=finalSnap.seqStartHigh ?? 0, highSeat=null;
+  const work=(seat,h,hs,round)=>{ snap=Object.assign({},finalSnap,{currentHigh:h,highSeat:hs,round,turnSeat:seat,phase:"bid",minNext:minNextOf(h)}); render(); };
+  // 按 AI 分组：同一座位的连续事件(偷看+出价)算一个回合，只思考一次再一并落地（仿单机）
+  const evs=finalSnap.events;
+  for(let i=0;i<evs.length;){
+    const seat=evs[i].seat, round=evs[i].round, nm=(finalSnap.players.find(p=>p.seat===seat)?.name)||"";
+    let j=i; while(j<evs.length && evs[j].seat===seat) j++;
+    work(seat,high,highSeat,round);                                        // 该 AI 正在思考（倒计时）
+    await thinkCountdown(AI_THINK_MIN + Math.floor(Math.random()*(AI_THINK_MAX-AI_THINK_MIN)));
+    for(let k=i;k<j;k++){ const ev=evs[k];                                 // 思考完，本回合动作一并揭晓
+      if(ev.type==="peek"){ log(`${nm} 偷看了「${ev.cells}格」的一件（第${ev.round}轮）`,'muted'); }
+      else if(ev.type==="bid"){ high=ev.amount; highSeat=ev.seat; log(`${nm} 出价 ${fmt(ev.amount)}（第${ev.round}轮）`,'g'); }
+      else { log(`${nm} 过（第${ev.round}轮）`,'muted'); }
+    }
+    work(seat,high,highSeat,round);                                        // 落地后立刻反映新价
+    i=j;
+  }
+  replaying=false;
+  const next=pendingSnap||finalSnap; pendingSnap=null;
+  applyFinal(next);
+}
+
+// 思考倒计时：在 #clock 上跑 ms 毫秒的读秒，结束 resolve
+function thinkCountdown(ms){
+  return new Promise(res=>{
+    const end=Date.now()+ms;
+    const t=setInterval(()=>{
+      const c=$("clock"); if(c) c.textContent=Math.max(0,Math.ceil((end-Date.now())/1000))+"s";
+      if(Date.now()>=end){ clearInterval(t); res(); }
+    },200);
+  });
 }
 
 async function refreshMyView(){
@@ -227,11 +286,14 @@ async function refreshMyView(){
 let clockT=null;
 function manageClock(){
   if(clockT){ clearInterval(clockT); clockT=null; }
-  if(snap.phase!=="bid"||!snap.deadline) return;
+  if(replaying||snap.phase!=="bid") return;
+  const mine=snap.turnSeat===me.seat;
+  const dl=mine?myDeadline:snap.deadline;   // 自己的回合用全新本地倒计时；看别人用服务端 deadline
+  if(!dl) return;
   clockT=setInterval(async ()=>{
-    const c=$("clock"); const left=Math.max(0,Math.ceil((snap.deadline-Date.now())/1000));
+    const c=$("clock"); const left=Math.max(0,Math.ceil((dl-Date.now())/1000));
     if(c) c.textContent=left+"s";
-    if(Date.now()>=snap.deadline){
+    if(Date.now()>=dl){
       clearInterval(clockT); clockT=null;
       try{ await call("tick",{room_id:me.room_id}); await refresh(); }catch(e){}
     }
@@ -248,6 +310,7 @@ async function pickTarget(idx){
   try{ const r=await call("peek",{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
     myKnown[idx]={ci:r.ci,value:r.value,name:r.name};
     toast(`你偷看：${r.cells}格 → ${r.name}（${fmt(r.value)}）`);
+    log(`你偷看了「${r.cells}格」→ ${r.name}（${fmt(r.value)}），第${snap.round}轮`,'y');
     await refresh();
   }catch(e){ toast(e.message); }
 }
@@ -256,9 +319,10 @@ async function humanRaise(){
   const inp=$("bidamt"); let amt=parseInt((inp.value||"").replace(/[^0-9]/g,""),10);
   if(isNaN(amt)){ toast("请输入金额"); return; }
   if(amt<snap.minNext){ toast("至少要 "+fmt(snap.minNext)); return; }
-  try{ await call("bid",{room_id:me.room_id,player_token:me.player_token,amount:amt}); await refresh(); }catch(e){ toast(e.message); await refresh(); }
+  const r=snap.round;
+  try{ await call("bid",{room_id:me.room_id,player_token:me.player_token,amount:amt}); log(`你 出价 ${fmt(amt)}（第${r}轮）`,'y'); await refresh(); }catch(e){ toast(e.message); await refresh(); }
 }
-async function humanPass(){ if(!isMyTurn())return; try{ await call("pass",{room_id:me.room_id,player_token:me.player_token}); await refresh(); }catch(e){ toast(e.message); await refresh(); } }
+async function humanPass(){ if(!isMyTurn())return; const r=snap.round; try{ await call("pass",{room_id:me.room_id,player_token:me.player_token}); log(`你 过（第${r}轮）`,'muted'); await refresh(); }catch(e){ toast(e.message); await refresh(); } }
 async function nextBox(){ try{ await call("next_box",{room_id:me.room_id,player_token:me.player_token}); await refresh(); }catch(e){ toast(e.message); } }
 function isMyTurn(){ return snap && snap.phase==="bid" && snap.turnSeat===me.seat; }
 
@@ -272,7 +336,7 @@ function render(){
   // 玩家条
   $("players").innerHTML=snap.players.map(p=>{
     const turn=(snap.turnSeat===p.seat)?' turn':''; const out=p.alive?'':' out'; const mine=p.seat===me.seat?' me':'';
-    const bidding=(snap.turnSeat===p.seat)?`<div class="bidding">⏳ 出价中…</div>`:'<div class="tag">&nbsp;</div>';
+    const bidding=(snap.turnSeat===p.seat)?`<div class="bidding">${p.is_ai?'🤔 思考中…':'⏳ 出价中…'}</div>`:'<div class="tag">&nbsp;</div>';
     return `<div class="pl${turn}${out}${mine}"><div class="nm">${p.name}${p.is_ai?' 🤖':' 👤'}<span class="tag">${p.alive?'':'淘汰'}</span></div>
       <div class="cash">${fmt(p.cash)}</div>${bidding}</div>`;}).join('');
   // 状态条
@@ -322,7 +386,7 @@ function renderAction(){
   if(snap.phase==="bid"){
     if(!isMyTurn()){
       const tp=snap.players.find(p=>p.seat===snap.turnSeat);
-      el.innerHTML=`<div class="hint"><b>${tp?.name||''}</b> 出价中… <span class="clock" id="clock"></span></div>`;
+      el.innerHTML=`<div class="hint"><b>${tp?.name||''}</b> ${tp?.is_ai?'思考出价中':'出价中'}… <span class="clock" id="clock"></span></div>`;
       return;
     }
     const blind=(snap.items||[]).reduce((a,it)=>{const k=myKnown[it.idx]; return a+(k?k.value:EV[SIZES.indexOf(it.cells)]);},0);
@@ -361,9 +425,8 @@ function logFromSnapshot(s, prevPhase){
     const w=s.lastWinner;
     log(w.flow?`第${s.box}箱 流拍，整箱 ${fmt(w.total)}`:`${w.who} 以 ${fmt(w.bid)} 拿下，整箱 ${fmt(w.total)}，利润 ${w.profit>=0?'+':''}${fmt(w.profit)}`, w.flow?'y':(w.profit>=0?'g':'b'));
     if(w.dead?.length) log(`💀 ${w.dead.join('、')} 淘汰`,'b');
-  } else if(s.phase==="bid"){
-    if(s.currentHigh>0){ const hp=s.players.find(p=>p.seat===s.highSeat); log(`当前最高 ${fmt(s.currentHigh)}（${hp?.name||''}）`,'g'); }
   }
+  // 出价/偷看的逐条记录改由回放(replayEvents)与本人动作产生，这里不再重复推导
 }
 function log(t,cls){const l=$("log");if(!l)return;const d=document.createElement('div');if(cls)d.className=cls;d.textContent=t;l.appendChild(d);l.scrollTop=l.scrollHeight;}
 
