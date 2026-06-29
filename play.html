@@ -129,11 +129,13 @@ let channel = null;
 let pollT = null;
 let lastLog = "";
 // AI 回合回放（手感：假思考+倒计时+逐条记录）。常量对齐服务端，仅作展示
-const TURN_TIME = 25000, AI_THINK_MIN = 3000, AI_THINK_MAX = 8000, OPENING = 1000;
+const TURN_TIME = 25000, AI_THINK_MIN = 800, AI_THINK_MAX = 1600, OPENING = 1000;
 const minRaiseC = (h) => Math.max(100, Math.ceil(h * 0.05 / 100) * 100);
 const minNextOf = (h) => h === 0 ? OPENING : h + minRaiseC(h);
 let lastSeq = -1, replaying = false, pendingSnap = null;   // 按 seq 去重，回放中挂起后续快照
 let myDeadline = null, lastTurnKey = "";                    // 轮到自己时给全新本地倒计时
+let lastSig = "";                                           // 渲染去重：状态没变就不重渲染（否则轮询会清空正在输入的出价框）
+let peekingIdx = -1;                                        // 正在偷看的件 → 显示转圈，缓解点击无反馈
 
 // ---------- 服务器调用 ----------
 async function call(action, extra={}){
@@ -225,6 +227,10 @@ function applySnapshot(s){
 }
 
 function applyFinal(s){
+  // 渲染去重：盘面关键状态没变就只更新引用、不重渲染（否则 3s 轮询会清掉正在输入的出价框）
+  const sig=`${s.box}|${s.round}|${s.turnPos}|${s.phase}|${s.currentHigh}|${s.highSeat}|${s.seq}|${s.turnPeeked}`;
+  if(snap && sig===lastSig){ snap=s; return; }
+  lastSig=sig;
   const prevPhase = snap?.phase;
   snap = s;
   // 换箱了 → 清空我的偷看记忆并重新拉
@@ -255,10 +261,14 @@ async function replayEvents(finalSnap){
   const hideItems=()=>finalSnap.items.map(it=>({idx:it.idx,cells:it.cells,peeks:visPeeks(it.peeks),revealed:false}));
   const work=(seat,h,hs,round)=>{ snap=Object.assign({},finalSnap,{currentHigh:h,highSeat:hs,round,turnSeat:seat,phase:"bid",minNext:minNextOf(h),items:hideItems()}); render(); };
   // 按 AI 分组：同一座位的连续事件(偷看+出价)算一个回合，只思考一次再一并落地（仿单机）
+  const nameOf=(s)=>finalSnap.players.find(p=>p.seat===s)?.name||"?";
   const evs=finalSnap.events;
   for(let i=0;i<evs.length;){
-    const seat=evs[i].seat, round=evs[i].round, nm=(finalSnap.players.find(p=>p.seat===seat)?.name)||"";
-    let j=i; while(j<evs.length && evs[j].seat===seat) j++;
+    if(evs[i].type==="round"){                                            // 轮次头：记本轮出价顺序（仿单机）
+      const ev=evs[i]; log(`— 第${ev.round}轮，顺序：${(ev.order||[]).map(nameOf).join(' → ')} —`,'y'); i++; continue;
+    }
+    const seat=evs[i].seat, round=evs[i].round, nm=nameOf(seat);
+    let j=i; while(j<evs.length && evs[j].type!=="round" && evs[j].seat===seat) j++;
     work(seat,high,highSeat,round);                                        // 该 AI 正在思考（倒计时）
     await thinkCountdown(AI_THINK_MIN + Math.floor(Math.random()*(AI_THINK_MAX-AI_THINK_MIN)));
     for(let k=i;k<j;k++){ const ev=evs[k];                                 // 思考完，本回合动作一并揭晓
@@ -341,12 +351,14 @@ async function pickTarget(idx){
   if(!targetMode||!isMyTurn()||snap.turnPeeked) return;
   if(myKnown[idx]) { targetMode=false; render(); return; }
   targetMode=false;
+  peekingIdx=idx; render();                               // 点击瞬间转圈（缓解服务端往返期间的无反馈）
   try{ const r=await call("peek",{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
     myKnown[idx]={ci:r.ci,value:r.value,name:r.name};
+    peekingIdx=-1;
     toast(`你偷看：${r.cells}格 → ${r.name}（${fmt(r.value)}）`);
     log(`你偷看了「${r.cells}格」→ ${r.name}（${fmt(r.value)}），第${snap.round}轮`,'y');
     applyResp(r);
-  }catch(e){ toast(e.message); }
+  }catch(e){ peekingIdx=-1; render(); toast(e.message); }
 }
 async function humanRaise(){
   if(!isMyTurn()) return;
@@ -395,11 +407,11 @@ function render(){
     const bg=showFull?COLHEX[ci]:'#0c131c';
     const txt=showFull&&ci<=1?'#10171f':'var(--txt)';
     const badges=(it.peeks||[]).map(pk=>{const nmp=snap.players.find(p=>p.seat===pk.seat); return `<span class="badge${pk.seat===me.seat?' you':''}">${(nmp?.name||'?')[0]}${pk.round}</span>`;}).join('');
-    const opening = it.justOpen && !showFull;
-    const body = opening
+    const spin = (it.justOpen && !showFull) || (peekingIdx===it.idx && !showFull);   // 开箱中 或 正在偷看 → 转圈
+    const body = spin
       ? `<div class="sz">${it.cells}格</div><div class="spinner"></div>`
       : `<div class="sz">${it.cells}格</div><div class="nm">${showFull?nm:'？？？'}</div><div class="vl">${showFull?fmt(val):''}</div>`;
-    return `<div class="item${it.justOpen?' opening':''}${it.justReveal?' justrevealed':''}" style="width:${44+it.cells*16}px;border-color:${showFull?COLHEX[ci]:'#44566a'};background:${bg};color:${txt}" data-idx="${it.idx}">
+    return `<div class="item${(it.justOpen||peekingIdx===it.idx)?' opening':''}${it.justReveal?' justrevealed':''}" style="width:${44+it.cells*16}px;border-color:${showFull?COLHEX[ci]:'#44566a'};background:${bg};color:${txt}" data-idx="${it.idx}">
       <div class="peek">${badges}</div>${body}</div>`;}).join('');
   gd.querySelectorAll('.item').forEach(el=>el.onclick=()=>pickTarget(+el.dataset.idx));
   renderAction(); renderPaybook();
