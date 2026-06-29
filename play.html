@@ -219,12 +219,18 @@ function applySnapshot(s){
   if(replaying){ pendingSnap=s; return; }            // 回放中：先收着终态，放完再落
   if(lastSeq<0) lastSeq = s.seq ?? 0;                // 首见 → 对齐 seq，不回放历史
   if((s.seq??0) > lastSeq && s.events?.length && !replaying){  // 有新一批 AI 事件 → 回放
+    if(s.box!==myKnownBox) myKnown={};                 // 新箱回放前先清掉上箱偷看记忆，别泄漏到新箱网格（bug2）
     lastSeq = s.seq;
     replaying = true;                                 // 同步占位，挡住同批次的第二次触发（applyResp + realtime 双投递）
     replayEvents(s);
     return;
   }
   lastSeq = Math.max(lastSeq, s.seq ?? 0);
+  // 新结算且没回放事件（如我是本轮最后一个动作）→ 仍要逐件揭晓，别一次性全亮（bug1）
+  if((s.phase==="settle"||s.phase==="gameover") && snap && snap.box===s.box
+     && snap.phase!=="settle" && snap.phase!=="gameover" && snap.phase!=="reveal"){
+    playReveal(s); return;
+  }
   applyFinal(s);
 }
 
@@ -288,6 +294,18 @@ async function replayEvents(finalSnap){
   finally{
     replaying=false;
     const next=pendingSnap||finalSnap; pendingSnap=null;
+    applyFinal(next);
+  }
+}
+
+// 没经过 AI 回放就直接结算时（如我是本轮最后一个动作），单独播揭晓动画再落终态
+async function playReveal(s){
+  replaying=true;
+  if(clockT){ clearInterval(clockT); clockT=null; }
+  try{ await revealBox(s); }catch(e){ console.error("revealBox 出错:", e); }
+  finally{
+    replaying=false;
+    const next=pendingSnap||s; pendingSnap=null;
     applyFinal(next);
   }
 }
