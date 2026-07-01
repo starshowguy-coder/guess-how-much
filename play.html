@@ -73,6 +73,12 @@
   <div class="err" id="lobErr"></div>
   <div id="lobHome">
     <input id="nameInput" placeholder="你的昵称" maxlength="12">
+    <div class="seg" style="justify-content:center">
+      <span class="muted">模式：</span>
+      <button class="alt" id="mSeq" onclick="setCreateMode('seq')">顺序公开</button>
+      <button class="alt" id="mSealed" onclick="setCreateMode('sealed')">暗标截胡</button>
+    </div>
+    <div class="hint" id="modeHint" style="text-align:center"></div>
     <div class="seg">
       <button onclick="doCreate()">🏠 创建房间</button>
     </div>
@@ -136,6 +142,8 @@ let lastSeq = -1, replaying = false, pendingSnap = null;   // 按 seq 去重，�
 let myDeadline = null, lastTurnKey = "";                    // 轮到自己时给全新本地倒计时
 let lastSig = "";                                           // 渲染去重：状态没变就不重渲染（否则轮询会清空正在输入的出价框）
 let peekingIdx = -1;                                        // 正在偷看的件 → 显示转圈，缓解点击无反馈
+let sealPeekedKey = "";                                     // 暗标：我本轮是否已偷看（"box-round"）
+let lastSealKey = "";                                       // 暗标：已在日志里揭晓过的轮次，避免重复刷
 
 // ---------- 服务器调用 ----------
 async function call(action, extra={}){
@@ -164,10 +172,17 @@ function lobErr(m){ $("lobErr").textContent=m||""; }
 const LS={ get:k=>{try{return localStorage.getItem(k);}catch(e){return null;}}, set:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}}, del:k=>{try{localStorage.removeItem(k);}catch(e){}} };
 function saveSession(){ LS.set("ghm_me", JSON.stringify(me)); }
 
+let createMode='seq';
+function setCreateMode(m){ createMode=m; renderCreateMode(); }
+function renderCreateMode(){
+  const sq=$("mSeq"), sl=$("mSealed"); if(!sq)return;
+  sq.classList.toggle('warn',createMode==='seq'); sl.classList.toggle('warn',createMode==='sealed');
+  $("modeHint").textContent = createMode==='sealed' ? '每轮暗中出价一起揭晓；开低价会被 2×/1.5× 截胡' : '轮流公开加价，实时读牌';
+}
 async function doCreate(){
   lobErr("");
   const name=$("nameInput").value.trim()||"房主";
-  try{ const r=await call("create_room",{name}); me={room_id:r.room_id,room_code:r.room_code,player_token:r.player_token,seat:r.seat,host:true}; saveSession(); enterRoom(); }
+  try{ const r=await call("create_room",{name,mode:createMode}); me={room_id:r.room_id,room_code:r.room_code,player_token:r.player_token,seat:r.seat,host:true}; saveSession(); enterRoom(); }
   catch(e){ lobErr(e.message); }
 }
 async function doJoin(){
@@ -236,7 +251,8 @@ function applySnapshot(s){
 
 function applyFinal(s){
   // 渲染去重：盘面关键状态没变就只更新引用、不重渲染（否则 3s 轮询会清掉正在输入的出价框）
-  const sig=`${s.box}|${s.round}|${s.turnPos}|${s.phase}|${s.currentHigh}|${s.highSeat}|${s.seq}|${s.turnPeeked}|${(s.players||[]).length}`;
+  const subCnt=(s.players||[]).filter(p=>p.submitted).length; // 暗标：有人提交 → 状态变，需重渲染
+  const sig=`${s.box}|${s.round}|${s.turnPos}|${s.phase}|${s.currentHigh}|${s.highSeat}|${s.seq}|${s.turnPeeked}|${(s.players||[]).length}|${s.mode}|${subCnt}|${s.lastSeal?.round??-1}`;
   if(snap && sig===lastSig){ snap=s; return; }
   lastSig=sig;
   const prevPhase = snap?.phase;
@@ -350,9 +366,9 @@ async function refreshMyView(){
 let clockT=null;
 function manageClock(){
   if(clockT){ clearInterval(clockT); clockT=null; }
-  if(replaying||snap.phase!=="bid") return;
+  if(replaying||(snap.phase!=="bid"&&snap.phase!=="sealbid")) return;
   const mine=snap.turnSeat===me.seat;
-  const dl=mine?myDeadline:snap.deadline;   // 自己的回合用全新本地倒计时；看别人用服务端 deadline
+  const dl = snap.phase==="sealbid" ? snap.deadline : (mine?myDeadline:snap.deadline);   // 暗标用服务端 deadline
   if(!dl) return;
   clockT=setInterval(async ()=>{
     const c=$("clock"); const left=Math.max(0,Math.ceil((dl-Date.now())/1000));
@@ -366,18 +382,24 @@ function manageClock(){
 
 // ---------- 动作 ----------
 let targetMode=false;
-function startPeek(){ if(!isMyTurn()||snap.turnPeeked) return; targetMode=true; render(); }
+function meAlive(){ return !!snap?.players.find(p=>p.seat===me.seat)?.alive; }
+function sealActive(){ return snap && snap.mode==='sealed' && snap.phase==='sealbid'; }
+function sealPeekedThisRound(){ return sealPeekedKey===`${snap?.box}-${snap?.round}`; }
+function canPeekNow(){ return (isMyTurn()&&!snap.turnPeeked) || (sealActive()&&meAlive()&&!sealPeekedThisRound()); }
+function startPeek(){ if(!canPeekNow()) return; targetMode=true; render(); }
 async function pickTarget(idx){
-  if(!targetMode||!isMyTurn()||snap.turnPeeked) return;
+  if(!targetMode||!canPeekNow()) return;
   if(myKnown[idx]) { targetMode=false; render(); return; }
   targetMode=false;
   peekingIdx=idx; render();                               // 点击瞬间转圈（缓解服务端往返期间的无反馈）
-  try{ const r=await call("peek",{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
+  const act = sealActive()?"seal_peek":"peek";
+  try{ const r=await call(act,{room_id:me.room_id,player_token:me.player_token,item_idx:idx});
     myKnown[idx]={ci:r.ci,value:r.value,name:r.name};
+    if(sealActive()) sealPeekedKey=`${snap.box}-${snap.round}`;
     peekingIdx=-1; render();                               // 立刻收圈：轮询可能已抢更 lastSig，applyResp 会被去重吞掉，这里强制重渲染
     toast(`你偷看：${r.cells}格 → ${r.name}（${fmt(r.value)}）`);
     log(`你偷看了「${r.cells}格」→ ${r.name}（${fmt(r.value)}），第${snap.round}轮`,'y');
-    applyResp(r);
+    if(r.snapshot) applyResp(r);
   }catch(e){ peekingIdx=-1; render(); toast(e.message); }
 }
 async function humanRaise(){
@@ -390,7 +412,15 @@ async function humanRaise(){
 }
 async function humanPass(){ if(!isMyTurn())return; const r=snap.round; try{ const resp=await call("pass",{room_id:me.room_id,player_token:me.player_token}); log(`你 过（第${r}轮）`,'muted'); applyResp(resp); }catch(e){ toast(e.message); await refresh(); } }
 async function nextBox(){ try{ applyResp(await call("next_box",{room_id:me.room_id,player_token:me.player_token})); }catch(e){ toast(e.message); } }
-async function humanLoan(tier){ if(!isMyTurn()||myCash()>=snap.waterThis)return; try{ const resp=await call("loan",{room_id:me.room_id,player_token:me.player_token,tier}); const meP=resp.snapshot?.players.find(p=>p.seat===me.seat); if(meP)log(`💳 你贷款 → 第 ${meP.loanDueBox} 箱结算需还 ${fmt(meP.loanDue)}`,'y'); applyResp(resp); }catch(e){ toast(e.message); await refresh(); } }
+async function humanLoan(tier){ if(!(isMyTurn()||sealActive())||myCash()>=snap.waterThis)return; try{ const resp=await call("loan",{room_id:me.room_id,player_token:me.player_token,tier}); const meP=resp.snapshot?.players.find(p=>p.seat===me.seat); if(meP)log(`💳 你贷款 → 第 ${meP.loanDueBox} 箱结算需还 ${fmt(meP.loanDue)}`,'y'); applyResp(resp); }catch(e){ toast(e.message); await refresh(); } }
+async function sealBid(amt){
+  if(!sealActive()||!meAlive()) return;
+  if(amt===undefined){ const inp=$("bidamt"); amt=parseInt((inp.value||"").replace(/[^0-9]/g,""),10); if(isNaN(amt))amt=0; }
+  if(amt>0&&amt<OPENING){ toast("真出价至少 "+fmt(OPENING)+"，或弃标"); return; }
+  const r=snap.round;
+  try{ const resp=await call("seal_bid",{room_id:me.room_id,player_token:me.player_token,amount:amt}); log(`你暗标 ${amt>0?fmt(amt):'弃标'}（第${r}轮）`, amt>0?'y':'muted'); applyResp(resp); }
+  catch(e){ toast(e.message); await refresh(); }
+}
 // 退出/重开：清掉本地存档再刷新 → tryResume 不再恢复旧局，回到全新大厅
 function leaveRoom(){ if(!confirm("退出当前房间并回到大厅？")) return; LS.del("ghm_me"); location.reload(); }
 function isMyTurn(){ return snap && snap.phase==="bid" && snap.turnSeat===me.seat; }
@@ -403,20 +433,25 @@ function render(){
   const meP=snap.players.find(p=>p.seat===me.seat);
   $("meTag").textContent=`你是 ${meP?.name||""}（座位 ${me.seat+1}）${me.host?' · 房主':''}`;
   // 玩家条
+  const sealed=(snap.mode==='sealed');
   $("players").innerHTML=snap.players.map(p=>{
     const turn=(snap.turnSeat===p.seat)?' turn':''; const out=p.alive?'':' out'; const mine=p.seat===me.seat?' me':'';
-    const bidding=(snap.turnSeat===p.seat)?`<div class="bidding">${p.is_ai?'🤔 思考中…':'⏳ 出价中…'}</div>`:'<div class="tag">&nbsp;</div>';
+    let extra='<div class="tag">&nbsp;</div>';
+    if(snap.turnSeat===p.seat) extra=`<div class="bidding">${p.is_ai?'🤔 思考中…':'⏳ 出价中…'}</div>`;
+    else if(sealed&&snap.phase==='sealbid'&&p.alive) extra=`<div class="bidding">${p.submitted?'✔ 已交':'🔒 暗标中…'}</div>`;
     const debt=p.loanDue>0?`<div class="muted" style="font-size:11px">💳 欠 ${fmt(p.loanDue)}（第${p.loanDueBox}箱还）</div>`:'';
     return `<div class="pl${turn}${out}${mine}"><div class="nm">${p.name}${p.is_ai?' 🤖':' 👤'}<span class="tag">${p.alive?'':'淘汰'}</span></div>
-      <div class="cash">${fmt(p.cash)}</div>${debt}${bidding}</div>`;}).join('');
+      <div class="cash">${fmt(p.cash)}</div>${debt}${extra}</div>`;}).join('');
   // 状态条
   const hp=snap.highSeat!=null?snap.players.find(p=>p.seat===snap.highSeat):null;
   $("bar").innerHTML=
     `<span>第 <b>${snap.box}</b>/${snap.boxCap} 箱</span><span class="x">|</span>`+
-    `<span>第 <b>${snap.round}</b>/3 轮</span><span class="x">|</span>`+
-    `<span>当前最高 <b>${snap.currentHigh===0?'—':fmt(snap.currentHigh)}</b>${hp?'（'+hp.name+'）':''}</span><span class="x">|</span>`+
-    `<span>最低下一口 <b>${fmt(snap.minNext)}</b></span><span class="x">|</span>`+
-    `<span>水位线 <b>${fmt(snap.waterThis)}</b></span>`;
+    `<span>第 <b>${snap.round}</b>/3 轮${sealed?'（暗标）':''}</span><span class="x">|</span>`+
+    (sealed&&snap.phase==='sealbid'
+      ? `<span>暗标未揭晓</span><span class="x">|</span>`
+      : `<span>当前最高 <b>${snap.currentHigh===0?'—':fmt(snap.currentHigh)}</b>${hp?'（'+hp.name+'）':''}</span><span class="x">|</span>`+
+        `<span>最低下一口 <b>${fmt(snap.minNext)}</b></span><span class="x">|</span>`)+
+    `<span>水位线 <b>${fmt(snap.waterThis)}</b> <span class="muted">（低于线且垫底者出局）</span></span>`;
   // 网格
   const gd=$("grid"); gd.className='grid'+(targetMode?' targeting':'');
   const revealing = snap.phase==="reveal";
@@ -460,6 +495,30 @@ function renderAction(){
   if(snap.phase==="reveal"){
     const got=(snap.items||[]).filter(it=>it.revealed).reduce((a,it)=>a+(it.value||0),0);
     el.innerHTML=`<div class="hint">🔓 开箱中… 已揭晓累计 <b class="y">${fmt(got)}</b></div>`;
+    return;
+  }
+  if(snap.phase==="sealbid"){
+    const meL=snap.players.find(p=>p.seat===me.seat)||{};
+    if(!meL.alive){ el.innerHTML=`<div class="hint">你已淘汰，观战暗标中…</div>`; return; }
+    const subCnt=snap.players.filter(p=>p.alive&&p.submitted).length, aliveCnt=snap.players.filter(p=>p.alive).length;
+    if(meL.submitted){ el.innerHTML=`<div class="hint">🔒 已提交暗标，等其他人揭晓…（${subCnt}/${aliveCnt}）</div>`; return; }
+    const blind=(snap.items||[]).reduce((a,it)=>{const k=myKnown[it.idx]; return a+(k?k.value:EV[SIZES.indexOf(it.cells)]);},0);
+    const peekRow = sealPeekedThisRound()
+      ? `<div class="row"><span class="muted">✔ 本轮已偷看</span></div>`
+      : `<div class="row"><button class="alt" onclick="startPeek()">🔍 偷看一件（可选）</button>${targetMode?'<span class="hint y">↑ 点击上方任意一件</span>':'<span class="muted">偷看与出价一起暗中提交</span>'}</div>`;
+    const loanRow = meL.loanUsed
+      ? (meL.loanDue>0?`<div class="row"><span class="muted">💳 已贷，第 ${meL.loanDueBox} 箱结算还 ${fmt(meL.loanDue)}</span></div>`:``)
+      : (myCash()<snap.waterThis
+          ? `<div class="row"><span class="muted">💳 你已跌破水位线，可贷款翻盘：</span>
+              <button class="alt" onclick="humanLoan('low')">低3万/10%</button><button class="alt" onclick="humanLoan('mid')">中8万/15%</button><button class="alt" onclick="humanLoan('high')">高15万/20%</button></div>`
+          : ``);
+    const tip = snap.round<3 ? `本轮最高 > ${snap.round===1?'2':'1.5'}×第二名 → 直接截胡拿下；开低价小心被截` : `末轮：最高价拿下`;
+    el.innerHTML=`<div class="hint">🔒 第 ${snap.round} 轮暗标 <span class="clock" id="clock"></span>　盲估约 <b class="y">${fmt(blind)}</b>　现金 <b class="y">${fmt(myCash())}</b>　<span class="muted">出价保密，揭晓才亮（${subCnt}/${aliveCnt} 已交）</span></div>
+      ${peekRow}${loanRow}
+      <div class="row"><input id="bidamt" value="${OPENING}">
+        <button onclick="sealBid()">🔒 暗标提交</button>
+        <button class="warn" onclick="sealBid(0)">弃标（出0）</button></div>
+      <div class="row"><span class="muted">💡 ${tip}</span></div>`;
     return;
   }
   if(snap.phase==="bid"){
@@ -508,6 +567,15 @@ function renderPaybook(){
 
 // ---------- 日志（由快照变化推导） ----------
 function logFromSnapshot(s, prevPhase){
+  // 暗标揭晓：每轮把各人出价刷进日志（自带去重）
+  if(s.lastSeal){
+    const lk=`${s.box}-${s.lastSeal.round}`;
+    if(lk!==lastSealKey){ lastSealKey=lk;
+      const nm=seat=>s.players.find(p=>p.seat===seat)?.name||('P'+seat);
+      log(`📢 第${s.lastSeal.round}轮揭晓：`+s.lastSeal.bids.map(b=>`${nm(b.seat)} ${b.amt>0?fmt(b.amt):'弃'}`).join('　'),'y');
+      if(s.lastSeal.buyout) log(`💥 ${nm(s.lastSeal.winner)} 截胡一口价拿下！`,'g');
+    }
+  }
   const key=`${s.box}-${s.round}-${s.phase}-${s.currentHigh}-${s.highSeat}`;
   if(key===lastLog) return; lastLog=key;
   if(s.phase==="settle"){
@@ -536,8 +604,9 @@ async function tryResume(){
 }
 
 // 暴露给内联 onclick
-Object.assign(window,{doCreate,doJoin,doAddAi,doStart,startPeek,pickTarget,humanRaise,humanPass,nextBox,leaveRoom});
+Object.assign(window,{doCreate,doJoin,doAddAi,doStart,startPeek,pickTarget,humanRaise,humanPass,nextBox,leaveRoom,humanLoan,sealBid,setCreateMode});
 
+renderCreateMode();
 tryResume();
 </script>
 </body>
