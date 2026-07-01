@@ -390,6 +390,7 @@ async function humanRaise(){
 }
 async function humanPass(){ if(!isMyTurn())return; const r=snap.round; try{ const resp=await call("pass",{room_id:me.room_id,player_token:me.player_token}); log(`你 过（第${r}轮）`,'muted'); applyResp(resp); }catch(e){ toast(e.message); await refresh(); } }
 async function nextBox(){ try{ applyResp(await call("next_box",{room_id:me.room_id,player_token:me.player_token})); }catch(e){ toast(e.message); } }
+async function humanLoan(tier){ if(!isMyTurn()||myCash()>=snap.waterThis)return; try{ const resp=await call("loan",{room_id:me.room_id,player_token:me.player_token,tier}); const meP=resp.snapshot?.players.find(p=>p.seat===me.seat); if(meP)log(`💳 你贷款 → 第 ${meP.loanDueBox} 箱结算需还 ${fmt(meP.loanDue)}`,'y'); applyResp(resp); }catch(e){ toast(e.message); await refresh(); } }
 // 退出/重开：清掉本地存档再刷新 → tryResume 不再恢复旧局，回到全新大厅
 function leaveRoom(){ if(!confirm("退出当前房间并回到大厅？")) return; LS.del("ghm_me"); location.reload(); }
 function isMyTurn(){ return snap && snap.phase==="bid" && snap.turnSeat===me.seat; }
@@ -405,8 +406,9 @@ function render(){
   $("players").innerHTML=snap.players.map(p=>{
     const turn=(snap.turnSeat===p.seat)?' turn':''; const out=p.alive?'':' out'; const mine=p.seat===me.seat?' me':'';
     const bidding=(snap.turnSeat===p.seat)?`<div class="bidding">${p.is_ai?'🤔 思考中…':'⏳ 出价中…'}</div>`:'<div class="tag">&nbsp;</div>';
+    const debt=p.loanDue>0?`<div class="muted" style="font-size:11px">💳 欠 ${fmt(p.loanDue)}（第${p.loanDueBox}箱还）</div>`:'';
     return `<div class="pl${turn}${out}${mine}"><div class="nm">${p.name}${p.is_ai?' 🤖':' 👤'}<span class="tag">${p.alive?'':'淘汰'}</span></div>
-      <div class="cash">${fmt(p.cash)}</div>${bidding}</div>`;}).join('');
+      <div class="cash">${fmt(p.cash)}</div>${debt}${bidding}</div>`;}).join('');
   // 状态条
   const hp=snap.highSeat!=null?snap.players.find(p=>p.seat===snap.highSeat):null;
   $("bar").innerHTML=
@@ -414,7 +416,7 @@ function render(){
     `<span>第 <b>${snap.round}</b>/3 轮</span><span class="x">|</span>`+
     `<span>当前最高 <b>${snap.currentHigh===0?'—':fmt(snap.currentHigh)}</b>${hp?'（'+hp.name+'）':''}</span><span class="x">|</span>`+
     `<span>最低下一口 <b>${fmt(snap.minNext)}</b></span><span class="x">|</span>`+
-    `<span>本箱税 <b>${fmt(snap.taxThis)}</b></span>`;
+    `<span>水位线 <b>${fmt(snap.waterThis)}</b></span>`;
   // 网格
   const gd=$("grid"); gd.className='grid'+(targetMode?' targeting':'');
   const revealing = snap.phase==="reveal";
@@ -450,8 +452,8 @@ function renderAction(){
     const w=snap.lastWinner;
     let s=w.flow?`<b>流拍</b>，整箱价值 ${fmt(w.total)}`
       :`<b>${w.who}</b> 以 ${fmt(w.bid)} 拿下，整箱 ${fmt(w.total)}，利润 <span class="${w.profit>=0?'g':'b'}">${w.profit>=0?'+':''}${fmt(w.profit)}</span>`;
-    const deadTxt=w.dead?.length?` 💀 ${w.dead.join('、')} 淘汰。`:'';
-    el.innerHTML=`<div class="hint">本箱结算：${s}。全员缴税 ${fmt(snap.taxThis)}。${deadTxt}</div>`+
+    const deadTxt=w.dead?.length?` 💀 水位 ${fmt(w.water??snap.waterThis)}：${w.dead.join('、')} 余额不足淘汰。`:'';
+    el.innerHTML=`<div class="hint">本箱结算：${s}。下箱水位线 <b class="y">${fmt(snap.waterNext)}</b>。${deadTxt}</div>`+
       (me.host?`<button onclick="nextBox()">下一箱 ▶</button>`:`<div class="hint">等房主开下一箱…</div>`);
     return;
   }
@@ -472,8 +474,18 @@ function renderAction(){
     const peekRow = snap.turnPeeked
       ? `<div class="row"><span class="muted">✔ 本回合已偷看</span></div>`
       : `<div class="row"><button class="alt" onclick="startPeek()">🔍 偷看一件（可选）</button>${targetMode?'<span class="hint y">↑ 点击上方任意一件</span>':'<span class="muted">先看再出价，或直接出价</span>'}</div>`;
+    const meL=snap.players.find(p=>p.seat===me.seat)||{};
+    const loanRow = meL.loanUsed
+      ? (meL.loanDue>0?`<div class="row"><span class="muted">💳 已贷，第 ${meL.loanDueBox} 箱结算还 ${fmt(meL.loanDue)}</span></div>`:`<div class="row"><span class="muted">💳 本局贷款额度已用</span></div>`)
+      : (myCash()<snap.waterThis
+          ? `<div class="row"><span class="muted">💳 你已跌破水位线，可贷款翻盘（每局1次）：</span>
+              <button class="alt" onclick="humanLoan('low')">低 3万/10%</button>
+              <button class="alt" onclick="humanLoan('mid')">中 8万/15%</button>
+              <button class="alt" onclick="humanLoan('high')">高 15万/20%</button></div>`
+          : `<div class="row"><span class="muted">💳 贷款仅在余额跌破水位线时可用（每局1次）</span></div>`);
     el.innerHTML=`<div class="hint">轮到你 <span class="clock" id="clock"></span>　盲估期望约 <b class="y">${fmt(blind)}</b>　当前最高 <b>${snap.currentHigh===0?'—':fmt(snap.currentHigh)}</b>，最低出价 <b>${fmt(need)}</b>，现金 <b class="y">${fmt(myCash())}</b></div>
       ${peekRow}
+      ${loanRow}
       <div class="row"><input id="bidamt" value="${need}">
         <button onclick="humanRaise()">出价</button>
         <button class="alt" onclick="document.getElementById('bidamt').value=${need}">最小加价</button>
